@@ -50,7 +50,12 @@ string getIPCSocketPath()
 }
 
 ExecutionFramework::ExecutionFramework() :
-	m_rpc(RPCSession::instance(getIPCSocketPath())),
+	ExecutionFramework(getIPCSocketPath())
+{
+}
+
+ExecutionFramework::ExecutionFramework(string const& _ipcPath) :
+	m_rpc(RPCSession::instance(_ipcPath)),
 	m_evmVersion(dev::test::Options::get().evmVersion()),
 	m_optimize(dev::test::Options::get().optimize),
 	m_showMessages(dev::test::Options::get().showMessages),

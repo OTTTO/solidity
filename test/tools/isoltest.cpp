@@ -17,6 +17,7 @@
 
 #include <libdevcore/CommonIO.h>
 #include <test/libsolidity/AnalysisFramework.h>
+#include <test/libsolidity/SemanticsTest.h>
 #include <test/libsolidity/SyntaxTest.h>
 
 #include <boost/algorithm/string.hpp>
@@ -37,17 +38,23 @@ using namespace std;
 namespace po = boost::program_options;
 namespace fs = boost::filesystem;
 
-struct SyntaxTestStats
+struct TestStats
 {
 	int successCount;
 	int runCount;
 	operator bool() const { return successCount == runCount; }
 };
 
-class SyntaxTestTool
+struct TestConfig
+{
+	static string editor;
+};
+
+template<typename TestType>
+class TestTool
 {
 public:
-	SyntaxTestTool(string const& _name, fs::path const& _path, bool _formatted):
+	TestTool(string const& _name, fs::path const& _path, bool _formatted):
 		m_formatted(_formatted), m_name(_name), m_path(_path)
 	{}
 
@@ -60,13 +67,12 @@ public:
 
 	Result process();
 
-	static SyntaxTestStats processPath(
+	static TestStats processPath(
 		fs::path const& _basepath,
 		fs::path const& _path,
 		bool const _formatted
 	);
 
-	static string editor;
 private:
 	enum class Request
 	{
@@ -82,12 +88,13 @@ private:
 	bool const m_formatted;
 	string const m_name;
 	fs::path const m_path;
-	unique_ptr<SyntaxTest> m_test;
+	unique_ptr<TestType> m_test;
 };
 
-string SyntaxTestTool::editor;
+string TestConfig::editor;
 
-void SyntaxTestTool::printContract() const
+template<>
+void TestTool<SyntaxTest>::printContract() const
 {
 	if (m_formatted)
 	{
@@ -96,7 +103,7 @@ void SyntaxTestTool::printContract() const
 			return;
 
 		std::vector<char const*> sourceFormatting(source.length(), formatting::RESET);
-		for (auto const& error: m_test->errorList())
+		for (auto const& error: m_test->results())
 			if (error.locationStart >= 0 && error.locationEnd >= 0)
 			{
 				assert(static_cast<size_t>(error.locationStart) <= source.length());
@@ -138,7 +145,18 @@ void SyntaxTestTool::printContract() const
 	}
 }
 
-SyntaxTestTool::Result SyntaxTestTool::process()
+template<>
+void TestTool<SemanticsTest>::printContract() const
+{
+	stringstream stream(m_test->source());
+	string line;
+	while (getline(stream, line))
+		cout << "    " << line << endl;
+	cout << endl;
+}
+
+template<typename TestType>
+typename TestTool<TestType>::Result TestTool<TestType>::process()
 {
 	bool success;
 	std::stringstream outputMessages;
@@ -147,7 +165,7 @@ SyntaxTestTool::Result SyntaxTestTool::process()
 
 	try
 	{
-		m_test = unique_ptr<SyntaxTest>(new SyntaxTest(m_path.string()));
+		m_test = unique_ptr<TestType>(new TestType(m_path.string()));
 		success = m_test->run(outputMessages, "  ", m_formatted);
 	}
 	catch(CompilerError const& _e)
@@ -203,7 +221,8 @@ SyntaxTestTool::Result SyntaxTestTool::process()
 	}
 }
 
-SyntaxTestTool::Request SyntaxTestTool::handleResponse(bool const _exception)
+template<typename TestType>
+typename TestTool<TestType>::Request TestTool<TestType>::handleResponse(bool const _exception)
 {
 	if (_exception)
 		cout << "(e)dit/(s)kip/(q)uit? ";
@@ -227,13 +246,13 @@ SyntaxTestTool::Request SyntaxTestTool::handleResponse(bool const _exception)
 				ofstream file(m_path.string(), ios::trunc);
 				file << m_test->source();
 				file << "// ----" << endl;
-				if (!m_test->errorList().empty())
-					m_test->printErrorList(file, m_test->errorList(), "// ", false);
+				if (!m_test->results().empty())
+					m_test->print(file, m_test->results(), "// ", false);
 				return Request::Rerun;
 			}
 		case 'e':
 			cout << endl << endl;
-			if (system((editor + " \"" + m_path.string() + "\"").c_str()))
+			if (system((TestConfig::editor + " \"" + m_path.string() + "\"").c_str()))
 				cerr << "Error running editor command." << endl << endl;
 			return Request::Rerun;
 		case 'q':
@@ -246,7 +265,16 @@ SyntaxTestTool::Request SyntaxTestTool::handleResponse(bool const _exception)
 }
 
 
-SyntaxTestStats SyntaxTestTool::processPath(
+// TODO: deduplicate
+bool isTestFilename(boost::filesystem::path const& _filename)
+{
+	return _filename.extension().string() == ".sol" &&
+		   !boost::starts_with(_filename.string(), "~") &&
+		   !boost::starts_with(_filename.string(), ".");
+}
+
+template<typename TestType>
+TestStats TestTool<TestType>::processPath(
 	fs::path const& _basepath,
 	fs::path const& _path,
 	bool const _formatted
@@ -269,12 +297,12 @@ SyntaxTestStats SyntaxTestTool::processPath(
 				fs::directory_iterator(fullpath),
 				fs::directory_iterator()
 			))
-				if (fs::is_directory(entry.path()) || SyntaxTest::isTestFilename(entry.path().filename()))
+				if (fs::is_directory(entry.path()) || isTestFilename(entry.path().filename()))
 					paths.push(currentPath / entry.path().filename());
 		}
 		else
 		{
-			SyntaxTestTool testTool(currentPath.string(), fullpath, _formatted);
+			TestTool<TestType> testTool(currentPath.string(), fullpath, _formatted);
 			++runCount;
 			auto result = testTool.process();
 
@@ -310,11 +338,12 @@ SyntaxTestStats SyntaxTestTool::processPath(
 int main(int argc, char *argv[])
 {
 	if (getenv("EDITOR"))
-		SyntaxTestTool::editor = getenv("EDITOR");
+		TestConfig::editor = getenv("EDITOR");
 	else if (fs::exists("/usr/bin/editor"))
-		SyntaxTestTool::editor = "/usr/bin/editor";
+		TestConfig::editor = "/usr/bin/editor";
 
 	fs::path testPath;
+	bool disableIPC = false;
 	bool formatted = true;
 	po::options_description options(
 		R"(isoltest, tool for interactively managing test contracts.
@@ -327,8 +356,10 @@ Allowed options)",
 	options.add_options()
 		("help", "Show this help screen.")
 		("testpath", po::value<fs::path>(&testPath), "path to test files")
+		("ipcpath", po::value<string>(&SemanticsTest::ipcPath), "path to ipc socket")
+		("no-ipc", "disable semantics tests")
 		("no-color", "don't use colors")
-		("editor", po::value<string>(&SyntaxTestTool::editor), "editor for opening contracts");
+		("editor", po::value<string>(&TestConfig::editor), "editor for opening contracts");
 
 	po::variables_map arguments;
 	try
@@ -347,8 +378,23 @@ Allowed options)",
 			formatted = false;
 
 		po::notify(arguments);
+
+		if (arguments.count("no-ipc"))
+			disableIPC = true;
+		else
+		{
+			solAssert(
+				!SemanticsTest::ipcPath.empty(),
+				"No ipc path specified. The --ipcpath argument is required, unless --no-ipc is used."
+			);
+			solAssert(
+				fs::exists(SemanticsTest::ipcPath),
+				"Invalid ipc path specified."
+			);
+		}
+
 	}
-	catch (po::error const& _exception)
+	catch (std::exception const& _exception)
 	{
 		cerr << _exception.what() << endl;
 		return 1;
@@ -375,22 +421,55 @@ Allowed options)",
 		}
 	}
 
+	TestStats global_stats { 0, 0 };
+
 	fs::path syntaxTestPath = testPath / "libsolidity" / "syntaxTests";
 
 	if (fs::exists(syntaxTestPath) && fs::is_directory(syntaxTestPath))
 	{
-		auto stats = SyntaxTestTool::processPath(testPath / "libsolidity", "syntaxTests", formatted);
+		auto stats = TestTool<SyntaxTest>::processPath(testPath / "libsolidity", "syntaxTests", formatted);
 
-		cout << endl << "Summary: ";
+		cout << endl << "Syntax Test Summary: ";
 		FormattedScope(cout, formatted, {BOLD, stats ? GREEN : RED}) <<
 			stats.successCount << "/" << stats.runCount;
-		cout << " tests successful." << endl;
+		cout << " tests successful." << endl << endl;
 
-		return stats ? 0 : 1;
+		global_stats.runCount += stats.runCount;
+		global_stats.successCount += stats.successCount;
 	}
 	else
 	{
-		cerr << "Test path not found. Use the --testpath argument." << endl;
+		cerr << "Syntax tests not found. Use the --testpath argument." << endl;
 		return 1;
 	}
+
+	if (!disableIPC)
+	{
+		fs::path semanticsTestPath = testPath / "libsolidity" / "semanticsTests";
+
+		if (fs::exists(semanticsTestPath) && fs::is_directory(semanticsTestPath))
+		{
+			auto stats = TestTool<SemanticsTest>::processPath(testPath / "libsolidity", "semanticsTests", formatted);
+
+			cout << endl << "Semantics Test Summary: ";
+			FormattedScope(cout, formatted, {BOLD, stats ? GREEN : RED}) <<
+																		 stats.successCount << "/" << stats.runCount;
+			cout << " tests successful." << endl << endl;
+
+			global_stats.runCount += stats.runCount;
+			global_stats.successCount += stats.successCount;
+		}
+		else
+		{
+			cerr << "Semantics tests not found. Use the --testpath argument." << endl;
+			return 1;
+		}
+	}
+
+	cout << endl << "Summary: ";
+	FormattedScope(cout, formatted, {BOLD, global_stats ? GREEN : RED}) <<
+		global_stats.successCount << "/" << global_stats.runCount;
+	cout << " tests successful." << endl;
+
+	return global_stats ? 0 : 1;
 }

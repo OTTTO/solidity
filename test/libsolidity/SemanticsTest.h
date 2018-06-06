@@ -17,7 +17,7 @@
 
 #pragma once
 
-#include <test/libsolidity/AnalysisFramework.h>
+#include <test/libsolidity/SolidityExecutionFramework.h>
 #include <test/libsolidity/FormattedScope.h>
 #include <libsolidity/interface/Exceptions.h>
 
@@ -33,48 +33,63 @@ namespace solidity
 namespace test
 {
 
-struct SyntaxTestError
+struct SemanticsTestFunctionCall
 {
-	std::string type;
-	std::string message;
-	int locationStart;
-	int locationEnd;
-	bool operator==(SyntaxTestError const& _rhs) const
-	{
-		return type == _rhs.type &&
-			message == _rhs.message &&
-			locationStart == _rhs.locationStart &&
-			locationEnd == _rhs.locationEnd;
-	}
+	std::string signature;
+	std::string arguments;
+	u256 value;
+	std::string result;
+	bool operator==(SemanticsTestFunctionCall const& rhs) const;
 };
 
 
-class SyntaxTest: AnalysisFramework
+class SemanticsTest: SolidityExecutionFramework
 {
 public:
-	SyntaxTest(std::string const& _filename);
+	SemanticsTest(std::string const& _filename);
 
 	bool run(std::ostream& _stream, std::string const& _linePrefix = "", bool const _formatted = false);
 
-	std::vector<SyntaxTestError> const& expectations() const { return m_expectations; }
+	std::vector<SemanticsTestFunctionCall> const& expectations() const { return m_expectations; }
 	std::string const& source() const { return m_source; }
-	std::vector<SyntaxTestError> const& results() const { return m_errorList; }
+	std::vector<SemanticsTestFunctionCall> const& results() const { return m_results; }
 
 	static void print(
-		std::ostream &_stream,
-		std::vector<SyntaxTestError> const &_errors,
-		std::string const &_linePrefix,
+		std::ostream& _stream,
+		std::vector<SemanticsTestFunctionCall> const& _calls,
+		std::string const& _linePrefix,
 		bool const _formatted = false
 	);
 
-	static std::string errorMessage(Exception const& _e);
+	enum class EncodingType {
+		Bool,
+		ByteString,
+		Dec,
+		Hash,
+		Hex,
+		RawBytes,
+		SignedDec,
+		String
+	};
+
+	static bytes stringToBytes(
+		std::string _list,
+		std::vector<std::pair<std::size_t, EncodingType>> *_encoding = nullptr
+	);
+	static std::string bytesToString(
+		bytes const& _value,
+		std::vector<std::pair<std::size_t, EncodingType>> const& _encoding
+	);
+
+	static std::string ipcPath;
 private:
 	static std::string parseSource(std::istream& _stream);
-	static std::vector<SyntaxTestError> parseExpectations(std::istream& _stream);
+	static std::vector<SemanticsTestFunctionCall> parseExpectations(std::istream& _stream);
+
 
 	std::string m_source;
-	std::vector<SyntaxTestError> m_expectations;
-	std::vector<SyntaxTestError> m_errorList;
+	std::vector<SemanticsTestFunctionCall> m_expectations;
+	std::vector<SemanticsTestFunctionCall> m_results;
 };
 
 }
